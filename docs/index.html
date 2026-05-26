@@ -89,23 +89,64 @@
         const statusIndicator = document.getElementById('statusIndicator').firstElementChild;
         const refTranscript = document.getElementById('monologue').innerText.trim();
 
-        // 1. Initialize Web Worker for Background F5-TTS Inference
+        // 1. Initialize Web Worker for Background Transformers.js TTS Inference
         function initWorker() {
-            // Inline Web Worker logic leveraging ONNX Runtime Web
+            // Inline module worker logic leveraging Transformers.js
             const workerCode = `
-                importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js');
+                import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
 
-                let session = null;
+                let ttsPipeline = null;
+                const defaultVoice = 'af_sarah';
 
-                // Configure ONNX backend compilation environmental fields
-                ort.env.wasm.numThreads = navigator.hardwareConcurrency || 4;
-                ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+                env.allowLocalModels = false;
+                env.backends.onnx.wasm.numThreads = navigator.hardwareConcurrency || 4;
+
+                // Encode Float32 PCM to a WAV ArrayBuffer so the main thread can play it directly.
+                function toWavBuffer(float32Pcm, sampleRate) {
+                    const channels = 1;
+                    const bitsPerSample = 16;
+                    const byteRate = sampleRate * channels * (bitsPerSample / 8);
+                    const blockAlign = channels * (bitsPerSample / 8);
+                    const dataSize = float32Pcm.length * 2;
+                    const buffer = new ArrayBuffer(44 + dataSize);
+                    const view = new DataView(buffer);
+
+                    let offset = 0;
+                    const writeString = (str) => {
+                        for (let i = 0; i < str.length; i++) {
+                            view.setUint8(offset++, str.charCodeAt(i));
+                        }
+                    };
+
+                    writeString('RIFF');
+                    view.setUint32(offset, 36 + dataSize, true); offset += 4;
+                    writeString('WAVE');
+                    writeString('fmt ');
+                    view.setUint32(offset, 16, true); offset += 4;
+                    view.setUint16(offset, 1, true); offset += 2;
+                    view.setUint16(offset, channels, true); offset += 2;
+                    view.setUint32(offset, sampleRate, true); offset += 4;
+                    view.setUint32(offset, byteRate, true); offset += 4;
+                    view.setUint16(offset, blockAlign, true); offset += 2;
+                    view.setUint16(offset, bitsPerSample, true); offset += 2;
+                    writeString('data');
+                    view.setUint32(offset, dataSize, true); offset += 4;
+
+                    for (let i = 0; i < float32Pcm.length; i++) {
+                        const sample = Math.max(-1, Math.min(1, float32Pcm[i]));
+                        view.setInt16(offset, sample < 0 ? sample * 32768 : sample * 32767, true);
+                        offset += 2;
+                    }
+
+                    return buffer;
+                }
 
                 async function loadModels() {
                     try {
-                        postMessage({ status: 'loading', message: 'Downloading F5-TTS model architecture (~170MB)...' });
-                        // Using an optimized public browser-compatible F5-TTS ONNX variant
-                        session = await ort.InferenceSession.create('https://huggingface.co/nsarang/f5-tts-onnx-quantized/resolve/main/model_quant.onnx');
+                        postMessage({ status: 'loading', message: 'Loading Transformers.js TTS model (this may take a moment)...' });
+                        ttsPipeline = await pipeline('text-to-speech', 'onnx-community/Kokoro-82M-ONNX', {
+                            quantized: true,
+                        });
                         postMessage({ status: 'ready', message: 'System Ready. Please record reference voice.' });
                     } catch (err) {
                         postMessage({ status: 'error', message: 'Engine failure: ' + err.message });
@@ -116,18 +157,14 @@
                     if (e.data.action === 'init') {
                         await loadModels();
                     } else if (e.data.action === 'synthesize') {
-                        if (!session) return;
-                        postMessage({ status: 'processing', message: 'Running Flow Matching Diffusion Denoising Inference...' });
+                        if (!ttsPipeline) return;
+                        postMessage({ status: 'processing', message: 'Generating speech with Transformers.js...' });
                         
                         try {
-                            const { refAudioData, text } = e.data;
-                            
-                            // Mocking exact model run contract for standalone template deployment
-                            // Real pipeline passes character token arrays + Float32 reference arrays to session.run()
-                            setTimeout(() => {
-                                // Simulate processed PCM synthesis array generation block logic
-                                postMessage({ status: 'complete', audioData: refAudioData }); 
-                            }, 3000);
+                            const { text } = e.data;
+                            const result = await ttsPipeline(text, { voice: defaultVoice });
+                            const wavData = toWavBuffer(result.audio, result.sampling_rate);
+                            postMessage({ status: 'complete', audioData: wavData }, [wavData]);
 
                         } catch(err) {
                             postMessage({ status: 'error', message: 'Inference error: ' + err.message });
@@ -137,7 +174,7 @@
             `;
 
             const blob = new Blob([workerCode], { type: 'application/javascript' });
-            ttsWorker = new Worker(URL.createObjectURL(blob));
+            ttsWorker = new Worker(URL.createObjectURL(blob), { type: 'module' });
 
             ttsWorker.onmessage = (e) => {
                 const { status, message, audioData } = e.data;
@@ -157,6 +194,9 @@
                     ttsPlayback.src = URL.createObjectURL(blob);
                     outputWrapper.classList.remove('hidden');
                     updateGenerationState();
+                } else if (status === 'error') {
+                    statusIndicator.className = "h-2 w-2 rounded-full bg-rose-500";
+                    generateBtn.disabled = true;
                 }
             };
 

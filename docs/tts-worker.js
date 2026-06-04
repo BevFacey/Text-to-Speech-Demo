@@ -149,11 +149,28 @@ function trainVoiceProfile(trainingInput, transcript = '') {
     const speakingRateWps = words > 0 && durationSec > 0 ? words / durationSec : null;
     const pitchHz = estimatePitchHz(pcm, sampleRate);
 
+    // Approximate brightness by measuring how much adjacent samples change.
+    let diffSq = 0;
+    let zc = 0;
+    let prev = pcm[0] || 0;
+    for (let i = 1; i < pcm.length; i++) {
+        const cur = pcm[i];
+        const d = cur - prev;
+        diffSq += d * d;
+        if ((prev >= 0 && cur < 0) || (prev < 0 && cur >= 0)) zc++;
+        prev = cur;
+    }
+    const diffRms = Math.sqrt(diffSq / Math.max(1, pcm.length - 1));
+    const brightness = diffRms / Math.max(1e-6, rms);
+    const zcr = zc / Math.max(1, pcm.length - 1);
+
     trainedVoiceProfile = {
         rms,
         peak,
         pitchHz,
         speakingRateWps,
+        brightness,
+        zcr,
     };
 
     return trainedVoiceProfile;
@@ -182,15 +199,38 @@ function applyVoiceProfile(generatedAudio, generatedSampleRate) {
 
     const basePitch = 170;
     const baseRms = 0.12;
+    const baseBrightness = 1.15;
+    const baseZcr = 0.09;
 
-    const pitchRatio = Math.max(0.8, Math.min(1.25, trainedVoiceProfile.pitchHz / basePitch));
-    const gain = Math.max(0.7, Math.min(1.5, trainedVoiceProfile.rms / baseRms));
+    const pitchRatio = Math.max(0.7, Math.min(1.35, trainedVoiceProfile.pitchHz / basePitch));
+    const gain = Math.max(0.6, Math.min(1.8, trainedVoiceProfile.rms / baseRms));
+    const brightnessRatio = Math.max(0.65, Math.min(1.5, trainedVoiceProfile.brightness / baseBrightness));
+    const zcrRatio = Math.max(0.75, Math.min(1.4, trainedVoiceProfile.zcr / baseZcr));
 
     const pitched = resampleLinear(generatedAudio, pitchRatio);
     const styled = new Float32Array(pitched.length);
 
+    // 1) Brightness shaping via simple pre-emphasis/de-emphasis.
+    const emphasis = Math.max(-0.4, Math.min(0.4, (brightnessRatio - 1) * 0.8));
+    let prev = 0;
     for (let i = 0; i < pitched.length; i++) {
-        styled[i] = Math.max(-1, Math.min(1, pitched[i] * gain));
+        const x = pitched[i];
+        styled[i] = x + emphasis * (x - prev);
+        prev = x;
+    }
+
+    // 2) Optional smoothing for lower-ZCR voices to make timbre less buzzy.
+    if (zcrRatio < 0.98) {
+        const smooth = Math.max(0.08, Math.min(0.3, (1 - zcrRatio) * 0.45));
+        for (let i = 1; i < styled.length; i++) {
+            styled[i] = styled[i - 1] * smooth + styled[i] * (1 - smooth);
+        }
+    }
+
+    // 3) Apply loudness profile and soft clip.
+    for (let i = 0; i < styled.length; i++) {
+        const y = styled[i] * gain;
+        styled[i] = Math.tanh(y * 1.15);
     }
 
     return styled;
@@ -198,11 +238,11 @@ function applyVoiceProfile(generatedAudio, generatedSampleRate) {
 
 async function loadModels() {
     try {
-        postMessage({ status: 'loading', message: 'Loading Transformers.js TTS model (this may take a moment)...' });
+        postMessage({ status: 'loading', message: 'Loading local TTS model (this may take a moment)...' });
         ttsPipeline = await pipeline('text-to-speech', 'Xenova/mms-tts-eng', {
             quantized: true,
         });
-        postMessage({ status: 'ready', message: 'System Ready. Please record reference voice.' });
+        postMessage({ status: 'ready', message: 'System ready. Record a reference voice to train a style profile.' });
     } catch (err) {
         postMessage({ status: 'error', message: 'Engine failure: ' + err.message });
     }
@@ -215,7 +255,7 @@ async function synthesize(text) {
         return;
     }
 
-    postMessage({ status: 'processing', message: 'Generating speech with trained voice profile...' });
+    postMessage({ status: 'processing', message: 'Generating speech with trained voice style profile...' });
 
     try {
         const result = await ttsPipeline(text);
@@ -249,7 +289,7 @@ self.onmessage = async (e) => {
             const profile = trainVoiceProfile(trainingInput, e.data.transcript || '');
             postMessage({
                 status: 'trained',
-                message: `Voice profile trained (pitch ${Math.round(profile.pitchHz)} Hz). You can now generate speech.`
+                message: `Voice style trained (pitch ${Math.round(profile.pitchHz)} Hz, brightness ${profile.brightness.toFixed(2)}). Generate speech to hear the matched style.`
             });
         } catch (err) {
             postMessage({ status: 'error', message: 'Training error: ' + err.message });

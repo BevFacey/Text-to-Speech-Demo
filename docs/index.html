@@ -77,6 +77,8 @@
         let audioChunks = [];
         let referenceAudioBlob = null;
         let ttsWorker;
+        let isModelReady = false;
+        let isVoiceTrained = false;
 
         // Domain Elements Selection
         const recordBtn = document.getElementById('recordBtn');
@@ -89,182 +91,157 @@
         const statusIndicator = document.getElementById('statusIndicator').firstElementChild;
         const refTranscript = document.getElementById('monologue').innerText.trim();
 
-        // 1. Initialize Web Worker for Background Transformers.js TTS Inference
-        function initWorker() {
-            // Inline module worker logic leveraging Transformers.js
-            const workerCode = `
-                import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+        const STATUS_CLASSES = {
+            ready: "h-2 w-2 rounded-full bg-emerald-500",
+            loading: "h-2 w-2 rounded-full bg-amber-500 animate-spin border-t-transparent",
+            error: "h-2 w-2 rounded-full bg-rose-500",
+        };
 
-                let ttsPipeline = null;
+        const RECORD_BUTTON_CLASSES = {
+            idle: "flex-1 py-3 px-4 rounded-xl font-medium bg-red-600 hover:bg-red-500 active:scale-[0.98] transition cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-red-900/20",
+            recording: "flex-1 py-3 px-4 rounded-xl font-medium bg-amber-600 hover:bg-amber-500 text-slate-950 transition flex items-center justify-center gap-2 animate-pulse",
+            recorded: "flex-1 py-3 px-4 rounded-xl font-medium bg-slate-700 hover:bg-slate-600 text-slate-200 transition flex items-center justify-center gap-2",
+        };
 
-                env.allowLocalModels = false;
-                env.backends.onnx.wasm.numThreads = navigator.hardwareConcurrency || 4;
+        function setStatusClass(type) {
+            statusIndicator.className = STATUS_CLASSES[type] || STATUS_CLASSES.error;
+        }
 
-                // Encode Float32 PCM to a WAV ArrayBuffer so the main thread can play it directly.
-                function toWavBuffer(float32Pcm, sampleRate) {
-                    const channels = 1;
-                    const bitsPerSample = 16;
-                    const byteRate = sampleRate * channels * (bitsPerSample / 8);
-                    const blockAlign = channels * (bitsPerSample / 8);
-                    const dataSize = float32Pcm.length * 2;
-                    const buffer = new ArrayBuffer(44 + dataSize);
-                    const view = new DataView(buffer);
+        function setRecordButtonState(state) {
+            if (state === 'recording') {
+                recordBtn.className = RECORD_BUTTON_CLASSES.recording;
+                recordBtn.innerHTML = '<span>Stop Recording...</span>';
+            } else if (state === 'recorded') {
+                recordBtn.className = RECORD_BUTTON_CLASSES.recorded;
+                recordBtn.innerHTML = '<span>Re-record Snippet</span>';
+            } else {
+                recordBtn.className = RECORD_BUTTON_CLASSES.idle;
+                recordBtn.innerHTML = '<span class="h-3 w-3 rounded-full bg-white animate-pulse"></span><span>Record Snippet</span>';
+            }
+        }
 
-                    let offset = 0;
-                    const writeString = (str) => {
-                        for (let i = 0; i < str.length; i++) {
-                            view.setUint8(offset++, str.charCodeAt(i));
-                        }
-                    };
+        function updateGeneratedAudio(audioData) {
+            const blob = new Blob([audioData], { type: 'audio/wav' });
+            ttsPlayback.src = URL.createObjectURL(blob);
+            outputWrapper.classList.remove('hidden');
+        }
 
-                    writeString('RIFF');
-                    view.setUint32(offset, 36 + dataSize, true); offset += 4;
-                    writeString('WAVE');
-                    writeString('fmt ');
-                    view.setUint32(offset, 16, true); offset += 4;
-                    view.setUint16(offset, 1, true); offset += 2;
-                    view.setUint16(offset, channels, true); offset += 2;
-                    view.setUint32(offset, sampleRate, true); offset += 4;
-                    view.setUint32(offset, byteRate, true); offset += 4;
-                    view.setUint16(offset, blockAlign, true); offset += 2;
-                    view.setUint16(offset, bitsPerSample, true); offset += 2;
-                    writeString('data');
-                    view.setUint32(offset, dataSize, true); offset += 4;
+        function handleWorkerMessage(e) {
+            const { status, message, audioData } = e.data;
+            if (message) statusText.innerText = message;
 
-                    for (let i = 0; i < float32Pcm.length; i++) {
-                        const sample = Math.max(-1, Math.min(1, float32Pcm[i]));
-                        view.setInt16(offset, sample < 0 ? sample * 32768 : sample * 32767, true);
-                        offset += 2;
-                    }
+            if (status === 'ready') {
+                isModelReady = true;
+                setStatusClass('ready');
+                updateGenerationState();
+            } else if (status === 'loading' || status === 'processing' || status === 'training') {
+                setStatusClass('loading');
+                generateBtn.disabled = true;
+            } else if (status === 'trained') {
+                isVoiceTrained = true;
+                setStatusClass('ready');
+                updateGenerationState();
+            } else if (status === 'complete' && audioData) {
+                setStatusClass('ready');
+                updateGeneratedAudio(audioData);
+                updateGenerationState();
+            } else if (status === 'error') {
+                setStatusClass('error');
+                generateBtn.disabled = true;
+            }
+        }
 
-                    return buffer;
-                }
-
-                async function loadModels() {
-                    try {
-                        postMessage({ status: 'loading', message: 'Loading Transformers.js TTS model (this may take a moment)...' });
-                        ttsPipeline = await pipeline('text-to-speech', 'Xenova/mms-tts-eng', {
-                            quantized: true,
-                        });
-                        postMessage({ status: 'ready', message: 'System Ready. Please record reference voice.' });
-                    } catch (err) {
-                        postMessage({ status: 'error', message: 'Engine failure: ' + err.message });
-                    }
-                }
-
-                self.onmessage = async (e) => {
-                    if (e.data.action === 'init') {
-                        await loadModels();
-                    } else if (e.data.action === 'synthesize') {
-                        if (!ttsPipeline) return;
-                        postMessage({ status: 'processing', message: 'Generating speech with Transformers.js...' });
-                        
-                        try {
-                            const { text } = e.data;
-                            const result = await ttsPipeline(text);
-                            const wavData = toWavBuffer(result.audio, result.sampling_rate);
-                            postMessage({ status: 'complete', audioData: wavData }, [wavData]);
-
-                        } catch(err) {
-                            postMessage({ status: 'error', message: 'Inference error: ' + err.message });
-                        }
-                    }
-                };
-            `;
-
-            const blob = new Blob([workerCode], { type: 'application/javascript' });
-            ttsWorker = new Worker(URL.createObjectURL(blob), { type: 'module' });
-
-            ttsWorker.onmessage = (e) => {
-                const { status, message, audioData } = e.data;
-                if (message) statusText.innerText = message;
-
-                if (status === 'ready') {
-                    statusIndicator.className = "h-2 w-2 rounded-full bg-emerald-500";
-                    updateGenerationState();
-                } else if (status === 'loading' || status === 'processing') {
-                    statusIndicator.className = "h-2 w-2 rounded-full bg-amber-500 animate-spin border-t-transparent";
-                    generateBtn.disabled = true;
-                } else if (status === 'complete' && audioData) {
-                    statusIndicator.className = "h-2 w-2 rounded-full bg-emerald-500";
-                    
-                    // Convert raw array buffer elements back to target node playback sources
-                    const blob = new Blob([audioData], { type: 'audio/wav' });
-                    ttsPlayback.src = URL.createObjectURL(blob);
-                    outputWrapper.classList.remove('hidden');
-                    updateGenerationState();
-                } else if (status === 'error') {
-                    statusIndicator.className = "h-2 w-2 rounded-full bg-rose-500";
-                    generateBtn.disabled = true;
-                }
-            };
-
+        function startWorker() {
+            ttsWorker = new Worker('./tts-worker.js', { type: 'module' });
+            ttsWorker.onmessage = handleWorkerMessage;
             ttsWorker.postMessage({ action: 'init' });
         }
 
-        // 2. Audio Capturing Lifecycle Management (Record Pipeline)
-        recordBtn.addEventListener('click', async () => {
-            if (mediaRecorder && mediaRecorder.state === "recording") {
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
                 mediaRecorder.stop();
-                return;
+                return true;
             }
+            return false;
+        }
 
+        async function startRecording() {
             audioChunks = [];
+            isVoiceTrained = false;
+            updateGenerationState();
+
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) audioChunks.push(e.data);
+            };
+
+            mediaRecorder.onstop = () => {
+                referenceAudioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                enrollmentPlayback.src = URL.createObjectURL(referenceAudioBlob);
+                enrollmentPlayback.classList.remove('hidden');
+
+                setRecordButtonState('recorded');
+                trainFromRecording();
+                stream.getTracks().forEach(track => track.stop());
+            };
+
+            mediaRecorder.start();
+            setRecordButtonState('recording');
+        }
+
+        async function handleRecordClick() {
+            if (stopRecording()) return;
+
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                mediaRecorder = new MediaRecorder(stream);
-                
-                mediaRecorder.ondataavailable = (e) => {
-                    if (e.data.size > 0) audioChunks.push(e.data);
-                };
-
-                mediaRecorder.onstop = async () => {
-                    referenceAudioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                    enrollmentPlayback.src = URL.createObjectURL(referenceAudioBlob);
-                    enrollmentPlayback.classList.remove('hidden');
-                    
-                    recordBtn.className = "flex-1 py-3 px-4 rounded-xl font-medium bg-slate-700 hover:bg-slate-600 text-slate-200 transition flex items-center justify-center gap-2";
-                    recordBtn.innerHTML = `<span>Re-record Snippet</span>`;
-                    
-                    updateGenerationState();
-                    // Clean up individual resource lines
-                    stream.getTracks().forEach(track => track.stop());
-                };
-
-                mediaRecorder.start();
-                recordBtn.className = "flex-1 py-3 px-4 rounded-xl font-medium bg-amber-600 hover:bg-amber-500 text-slate-950 transition flex items-center justify-center gap-2 animate-pulse";
-                recordBtn.innerHTML = `<span>Stop Recording...</span>`;
-
+                await startRecording();
             } catch (err) {
                 alert('Microphone hardware access denied: ' + err.message);
             }
-        });
+        }
+
+        async function trainFromRecording() {
+            if (!referenceAudioBlob || !ttsWorker) return;
+
+            const arrayBuffer = await referenceAudioBlob.arrayBuffer();
+            ttsWorker.postMessage({
+                action: 'train',
+                refAudioData: arrayBuffer,
+                transcript: refTranscript
+            }, [arrayBuffer]);
+        }
+
+        async function handleGenerateClick() {
+            if (!referenceAudioBlob) return;
+
+            ttsWorker.postMessage({
+                action: 'synthesize',
+                text: targetText.value.trim()
+            });
+        }
+
+        // 1. Initialize Web Worker for Background Transformers.js TTS Inference
+        function initWorker() {
+            setRecordButtonState('idle');
+            startWorker();
+        }
+
+        // 2. Audio Capturing Lifecycle Management (Record Pipeline)
+        recordBtn.addEventListener('click', handleRecordClick);
 
         // 3. UI State Coordination Verification Matrix
         function updateGenerationState() {
             const hasVoice = referenceAudioBlob !== null;
             const hasText = targetText.value.trim().length > 0;
-            const isModelReady = statusText.innerText.includes("Ready");
-            
-            generateBtn.disabled = !(hasVoice && hasText && isModelReady);
+
+            generateBtn.disabled = !(hasVoice && hasText && isModelReady && isVoiceTrained);
         }
 
         targetText.addEventListener('input', updateGenerationState);
 
         // 4. Fire Generation Processing
-        generateBtn.addEventListener('click', async () => {
-            if (!referenceAudioBlob) return;
-
-            // Audio resampling logic wrapper
-            const arrayBuffer = await referenceAudioBlob.arrayBuffer();
-            
-            ttsWorker.postMessage({
-                action: 'synthesize',
-                refAudioData: arrayBuffer,
-                text: targetText.value.trim(),
-                transcript: refTranscript
-            }, [arrayBuffer]);
-        });
+        generateBtn.addEventListener('click', handleGenerateClick);
 
         // Bootstrap Application Engine
         window.addEventListener('DOMContentLoaded', initWorker);

@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Local Voice Cloner for Text to Speech</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+    <script src="./vendor/tailwind-browser.js"></script>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col justify-between p-6 antialiased">
 
@@ -126,6 +127,30 @@
             outputWrapper.classList.remove('hidden');
         }
 
+        async function blobToMonoPcm(blob) {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+            try {
+                const arrayBuffer = await blob.arrayBuffer();
+                const decoded = await audioContext.decodeAudioData(arrayBuffer);
+                const sampleRate = decoded.sampleRate;
+                const channels = decoded.numberOfChannels;
+                const frameCount = decoded.length;
+
+                const mono = new Float32Array(frameCount);
+                for (let channel = 0; channel < channels; channel++) {
+                    const channelData = decoded.getChannelData(channel);
+                    for (let i = 0; i < frameCount; i++) {
+                        mono[i] += channelData[i] / channels;
+                    }
+                }
+
+                return { pcm: mono, sampleRate };
+            } finally {
+                await audioContext.close();
+            }
+        }
+
         function handleWorkerMessage(e) {
             const { status, message, audioData } = e.data;
             if (message) statusText.innerText = message;
@@ -204,12 +229,13 @@
         async function trainFromRecording() {
             if (!referenceAudioBlob || !ttsWorker) return;
 
-            const arrayBuffer = await referenceAudioBlob.arrayBuffer();
+            const { pcm, sampleRate } = await blobToMonoPcm(referenceAudioBlob);
             ttsWorker.postMessage({
                 action: 'train',
-                refAudioData: arrayBuffer,
+                refPcmData: pcm.buffer,
+                refSampleRate: sampleRate,
                 transcript: refTranscript
-            }, [arrayBuffer]);
+            }, [pcm.buffer]);
         }
 
         async function handleGenerateClick() {

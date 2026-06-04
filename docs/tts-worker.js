@@ -128,8 +128,8 @@ function estimatePitchHz(pcm, sampleRate) {
     return sampleRate / bestLag;
 }
 
-function trainVoiceProfile(refAudioData, transcript = '') {
-    const { pcm, sampleRate } = fromWavBuffer(refAudioData);
+function trainVoiceProfile(trainingInput, transcript = '') {
+    const { pcm, sampleRate } = trainingInput;
 
     if (!pcm.length) {
         throw new Error('Reference audio is empty.');
@@ -233,7 +233,20 @@ self.onmessage = async (e) => {
     } else if (e.data.action === 'train') {
         try {
             postMessage({ status: 'training', message: 'Training local voice profile from recording...' });
-            const profile = trainVoiceProfile(e.data.refAudioData, e.data.transcript || '');
+
+            let trainingInput;
+            if (e.data.refPcmData && e.data.refSampleRate) {
+                trainingInput = {
+                    pcm: new Float32Array(e.data.refPcmData),
+                    sampleRate: e.data.refSampleRate,
+                };
+            } else if (e.data.refAudioData) {
+                trainingInput = fromWavBuffer(e.data.refAudioData);
+            } else {
+                throw new Error('Missing training audio data.');
+            }
+
+            const profile = trainVoiceProfile(trainingInput, e.data.transcript || '');
             postMessage({
                 status: 'trained',
                 message: `Voice profile trained (pitch ${Math.round(profile.pitchHz)} Hz). You can now generate speech.`

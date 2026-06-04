@@ -8,6 +8,57 @@ let trainedSpeakerEmbeddings = null;
 env.allowLocalModels = false;
 env.backends.onnx.wasm.numThreads = navigator.hardwareConcurrency || 4;
 
+function toFloat32Audio(audioLike) {
+    if (!audioLike) {
+        throw new Error('Missing generated audio buffer.');
+    }
+
+    if (audioLike instanceof Float32Array) {
+        return audioLike;
+    }
+
+    if (audioLike.data instanceof Float32Array) {
+        return audioLike.data;
+    }
+
+    if (audioLike.data) {
+        return new Float32Array(audioLike.data);
+    }
+
+    return new Float32Array(audioLike);
+}
+
+function sanitizeAndNormalizePcm(pcm) {
+    if (!pcm.length) return pcm;
+
+    const clean = new Float32Array(pcm.length);
+    let peak = 0;
+    for (let i = 0; i < pcm.length; i++) {
+        const sample = Number.isFinite(pcm[i]) ? pcm[i] : 0;
+        clean[i] = sample;
+        const abs = Math.abs(sample);
+        if (abs > peak) peak = abs;
+    }
+
+    // Protect against clipping and overly hot outputs.
+    if (peak > 0.97) {
+        const gain = 0.94 / peak;
+        for (let i = 0; i < clean.length; i++) {
+            clean[i] *= gain;
+        }
+    }
+
+    // Short fades remove edge clicks at buffer boundaries.
+    const fade = Math.min(320, Math.floor(clean.length / 10));
+    for (let i = 0; i < fade; i++) {
+        const g = i / fade;
+        clean[i] *= g;
+        clean[clean.length - 1 - i] *= g;
+    }
+
+    return clean;
+}
+
 // Encode Float32 PCM to a WAV ArrayBuffer so the main thread can play it directly.
 function toWavBuffer(float32Pcm, sampleRate) {
     const channels = 1;
@@ -174,9 +225,9 @@ async function extractSpeakerEmbeddings(trainingInput) {
 
 async function loadModels() {
     try {
-        postMessage({ status: 'loading', message: 'Loading SpeechT5 voice-cloning model...' });
+        postMessage({ status: 'loading', message: 'Loading high-quality SpeechT5 voice-cloning model...' });
         ttsPipeline = await pipeline('text-to-speech', 'Xenova/speecht5_tts', {
-            quantized: true,
+            quantized: false,
         });
 
         postMessage({ status: 'loading', message: 'Loading speaker embedding encoder...' });
@@ -209,7 +260,9 @@ async function synthesize(text) {
             throw new Error('Model returned invalid audio output.');
         }
 
-        const wavData = toWavBuffer(result.audio, result.sampling_rate);
+        const rawAudio = toFloat32Audio(result.audio);
+        const cleanedAudio = sanitizeAndNormalizePcm(rawAudio);
+        const wavData = toWavBuffer(cleanedAudio, result.sampling_rate);
         postMessage({ status: 'complete', audioData: wavData }, [wavData]);
     } catch (err) {
         postMessage({ status: 'error', message: 'Inference error: ' + err.message });

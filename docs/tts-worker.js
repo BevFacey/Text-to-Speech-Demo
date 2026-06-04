@@ -1,7 +1,9 @@
-import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+import { pipeline, env, AutoProcessor, AutoModel, Tensor } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
 
 let ttsPipeline = null;
-let trainedVoiceProfile = null;
+let speakerProcessor = null;
+let speakerModel = null;
+let trainedSpeakerEmbeddings = null;
 
 env.allowLocalModels = false;
 env.backends.onnx.wasm.numThreads = navigator.hardwareConcurrency || 4;
@@ -105,81 +107,11 @@ function fromWavBuffer(arrayBuffer) {
     return { pcm: mono, sampleRate };
 }
 
-function estimatePitchHz(pcm, sampleRate) {
-    const minHz = 80;
-    const maxHz = 350;
-    const minLag = Math.floor(sampleRate / maxHz);
-    const maxLag = Math.floor(sampleRate / minHz);
-    let bestLag = minLag;
-    let bestCorr = -Infinity;
+function resampleToRate(input, srcRate, dstRate) {
+    if (srcRate === dstRate) return input;
+    if (!input.length) return input;
 
-    for (let lag = minLag; lag <= maxLag; lag++) {
-        let corr = 0;
-        const limit = pcm.length - lag;
-        for (let i = 0; i < limit; i++) {
-            corr += pcm[i] * pcm[i + lag];
-        }
-        if (corr > bestCorr) {
-            bestCorr = corr;
-            bestLag = lag;
-        }
-    }
-
-    return sampleRate / bestLag;
-}
-
-function trainVoiceProfile(trainingInput, transcript = '') {
-    const { pcm, sampleRate } = trainingInput;
-
-    if (!pcm.length) {
-        throw new Error('Reference audio is empty.');
-    }
-
-    let sumSq = 0;
-    let peak = 0;
-    for (let i = 0; i < pcm.length; i++) {
-        const v = pcm[i];
-        sumSq += v * v;
-        peak = Math.max(peak, Math.abs(v));
-    }
-
-    const rms = Math.sqrt(sumSq / pcm.length);
-    const durationSec = pcm.length / sampleRate;
-    const words = transcript.trim() ? transcript.trim().split(/\s+/).length : 0;
-    const speakingRateWps = words > 0 && durationSec > 0 ? words / durationSec : null;
-    const pitchHz = estimatePitchHz(pcm, sampleRate);
-
-    // Approximate brightness by measuring how much adjacent samples change.
-    let diffSq = 0;
-    let zc = 0;
-    let prev = pcm[0] || 0;
-    for (let i = 1; i < pcm.length; i++) {
-        const cur = pcm[i];
-        const d = cur - prev;
-        diffSq += d * d;
-        if ((prev >= 0 && cur < 0) || (prev < 0 && cur >= 0)) zc++;
-        prev = cur;
-    }
-    const diffRms = Math.sqrt(diffSq / Math.max(1, pcm.length - 1));
-    const brightness = diffRms / Math.max(1e-6, rms);
-    const zcr = zc / Math.max(1, pcm.length - 1);
-
-    trainedVoiceProfile = {
-        rms,
-        peak,
-        pitchHz,
-        speakingRateWps,
-        brightness,
-        zcr,
-    };
-
-    return trainedVoiceProfile;
-}
-
-function resampleLinear(input, ratio) {
-    if (!Number.isFinite(ratio) || ratio <= 0) return input;
-    if (Math.abs(ratio - 1) < 0.01) return input;
-
+    const ratio = srcRate / dstRate;
     const targetLength = Math.max(1, Math.floor(input.length / ratio));
     const output = new Float32Array(targetLength);
 
@@ -194,55 +126,66 @@ function resampleLinear(input, ratio) {
     return output;
 }
 
-function applyVoiceProfile(generatedAudio, generatedSampleRate) {
-    if (!trainedVoiceProfile) return generatedAudio;
-
-    const basePitch = 170;
-    const baseRms = 0.12;
-    const baseBrightness = 1.15;
-    const baseZcr = 0.09;
-
-    const pitchRatio = Math.max(0.7, Math.min(1.35, trainedVoiceProfile.pitchHz / basePitch));
-    const gain = Math.max(0.6, Math.min(1.8, trainedVoiceProfile.rms / baseRms));
-    const brightnessRatio = Math.max(0.65, Math.min(1.5, trainedVoiceProfile.brightness / baseBrightness));
-    const zcrRatio = Math.max(0.75, Math.min(1.4, trainedVoiceProfile.zcr / baseZcr));
-
-    const pitched = resampleLinear(generatedAudio, pitchRatio);
-    const styled = new Float32Array(pitched.length);
-
-    // 1) Brightness shaping via simple pre-emphasis/de-emphasis.
-    const emphasis = Math.max(-0.4, Math.min(0.4, (brightnessRatio - 1) * 0.8));
-    let prev = 0;
-    for (let i = 0; i < pitched.length; i++) {
-        const x = pitched[i];
-        styled[i] = x + emphasis * (x - prev);
-        prev = x;
+function l2Normalize(vector) {
+    let sumSq = 0;
+    for (let i = 0; i < vector.length; i++) {
+        sumSq += vector[i] * vector[i];
     }
 
-    // 2) Optional smoothing for lower-ZCR voices to make timbre less buzzy.
-    if (zcrRatio < 0.98) {
-        const smooth = Math.max(0.08, Math.min(0.3, (1 - zcrRatio) * 0.45));
-        for (let i = 1; i < styled.length; i++) {
-            styled[i] = styled[i - 1] * smooth + styled[i] * (1 - smooth);
-        }
+    const norm = Math.sqrt(sumSq);
+    if (norm < 1e-8) return vector;
+
+    const normalized = new Float32Array(vector.length);
+    for (let i = 0; i < vector.length; i++) {
+        normalized[i] = vector[i] / norm;
+    }
+    return normalized;
+}
+
+async function extractSpeakerEmbeddings(trainingInput) {
+    if (!speakerProcessor || !speakerModel) {
+        throw new Error('Speaker encoder is not ready yet.');
     }
 
-    // 3) Apply loudness profile and soft clip.
-    for (let i = 0; i < styled.length; i++) {
-        const y = styled[i] * gain;
-        styled[i] = Math.tanh(y * 1.15);
+    const { pcm, sampleRate } = trainingInput;
+    if (!pcm.length) {
+        throw new Error('Reference audio is empty.');
     }
 
-    return styled;
+    // Speaker encoder expects 16 kHz audio. We also cap long clips for speed.
+    const pcm16k = resampleToRate(pcm, sampleRate, 16000);
+    const maxSamples = 16000 * 12;
+    const clipped = pcm16k.length > maxSamples ? pcm16k.slice(0, maxSamples) : pcm16k;
+
+    const inputs = await speakerProcessor(clipped);
+    const outputs = await speakerModel(inputs);
+
+    if (!outputs.embeddings || !outputs.embeddings.data) {
+        throw new Error('Speaker encoder returned no embeddings.');
+    }
+
+    const embeddingData = outputs.embeddings.data instanceof Float32Array
+        ? outputs.embeddings.data
+        : new Float32Array(outputs.embeddings.data);
+
+    const normalized = l2Normalize(embeddingData);
+    return new Tensor('float32', normalized, [1, normalized.length]);
 }
 
 async function loadModels() {
     try {
-        postMessage({ status: 'loading', message: 'Loading local TTS model (this may take a moment)...' });
-        ttsPipeline = await pipeline('text-to-speech', 'Xenova/mms-tts-eng', {
+        postMessage({ status: 'loading', message: 'Loading SpeechT5 voice-cloning model...' });
+        ttsPipeline = await pipeline('text-to-speech', 'Xenova/speecht5_tts', {
             quantized: true,
         });
-        postMessage({ status: 'ready', message: 'System ready. Record a reference voice to train a style profile.' });
+
+        postMessage({ status: 'loading', message: 'Loading speaker embedding encoder...' });
+        speakerProcessor = await AutoProcessor.from_pretrained('Xenova/wavlm-base-plus-sv');
+        speakerModel = await AutoModel.from_pretrained('Xenova/wavlm-base-plus-sv', {
+            quantized: true,
+        });
+
+        postMessage({ status: 'ready', message: 'System ready. Record reference voice to train speaker identity.' });
     } catch (err) {
         postMessage({ status: 'error', message: 'Engine failure: ' + err.message });
     }
@@ -250,17 +193,23 @@ async function loadModels() {
 
 async function synthesize(text) {
     if (!ttsPipeline) return;
-    if (!trainedVoiceProfile) {
-        postMessage({ status: 'error', message: 'Record audio and train voice profile first.' });
+    if (!trainedSpeakerEmbeddings) {
+        postMessage({ status: 'error', message: 'Record and train reference voice first.' });
         return;
     }
 
-    postMessage({ status: 'processing', message: 'Generating speech with trained voice style profile...' });
+    postMessage({ status: 'processing', message: 'Generating speech with speaker-conditioned synthesis...' });
 
     try {
-        const result = await ttsPipeline(text);
-        const styledAudio = applyVoiceProfile(result.audio, result.sampling_rate);
-        const wavData = toWavBuffer(styledAudio, result.sampling_rate);
+        const result = await ttsPipeline(text, {
+            speaker_embeddings: trainedSpeakerEmbeddings,
+        });
+
+        if (!result || !result.audio || !result.sampling_rate) {
+            throw new Error('Model returned invalid audio output.');
+        }
+
+        const wavData = toWavBuffer(result.audio, result.sampling_rate);
         postMessage({ status: 'complete', audioData: wavData }, [wavData]);
     } catch (err) {
         postMessage({ status: 'error', message: 'Inference error: ' + err.message });
@@ -272,7 +221,7 @@ self.onmessage = async (e) => {
         await loadModels();
     } else if (e.data.action === 'train') {
         try {
-            postMessage({ status: 'training', message: 'Training local voice profile from recording...' });
+            postMessage({ status: 'training', message: 'Extracting speaker embeddings from reference audio...' });
 
             let trainingInput;
             if (e.data.refPcmData && e.data.refSampleRate) {
@@ -286,10 +235,10 @@ self.onmessage = async (e) => {
                 throw new Error('Missing training audio data.');
             }
 
-            const profile = trainVoiceProfile(trainingInput, e.data.transcript || '');
+            trainedSpeakerEmbeddings = await extractSpeakerEmbeddings(trainingInput);
             postMessage({
                 status: 'trained',
-                message: `Voice style trained (pitch ${Math.round(profile.pitchHz)} Hz, brightness ${profile.brightness.toFixed(2)}). Generate speech to hear the matched style.`
+                message: 'Speaker embedding trained. Generate speech to hear cloned voice identity.'
             });
         } catch (err) {
             postMessage({ status: 'error', message: 'Training error: ' + err.message });

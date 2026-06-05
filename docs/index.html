@@ -3,277 +3,150 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Local Voice Cloner for Text to Speech</title>
+    <title>Browser Text to Speech Demo</title>
     <link rel="icon" type="image/svg+xml" href="./favicon.svg">
     <script src="./vendor/tailwind-browser.js"></script>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col justify-between p-6 antialiased">
 
-    <header class="max-w-2xl mx-auto w-full text-center my-6">
+    <header class="max-w-2xl mx-auto w-full text-center my-8">
         <h1 class="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">
-            Local Voice Cloner for Text to Speech
+            Browser Text to Speech Demo
         </h1>
         <p class="text-slate-400 mt-2 text-sm">
-            Totally Client-Side. No data leaves your machine. Powered by <a href="https://github.com/fishaudio/F5-TTS" target="_blank" class="text-cyan-400 hover:text-cyan-300 underline">F5-TTS</a> & <a href="https://webassembly.org/" target="_blank" class="text-cyan-400 hover:text-cyan-300 underline">WebAssembly</a>.
-        </p>
-        <p class="text-slate-500 mt-2 text-xs">
-            Uses speaker-conditioned synthesis: your reference recording is converted into speaker embeddings for voice identity cloning.
+            Simple and local. Uses your browser's built-in speech engine.
         </p>
     </header>
 
-    <main class="max-w-2xl mx-auto w-full bg-slate-800 rounded-2xl shadow-xl border border-slate-700/50 p-6 space-y-8 my-auto">
-        
-        <section class="space-y-3">
-            <div class="flex items-center gap-2">
-                <span class="flex h-6 w-6 items-center justify-center rounded-full bg-cyan-500 text-xs font-bold text-slate-950">1</span>
-                <h2 class="text-lg font-semibold">Record Your Voice</h2>
+    <main class="max-w-2xl mx-auto w-full bg-slate-800 rounded-2xl shadow-xl border border-slate-700/50 p-6 space-y-6 my-auto">
+        <section class="space-y-2">
+            <label for="textInput" class="text-sm font-semibold text-cyan-300">Text</label>
+            <textarea id="textInput" rows="5" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500/50" placeholder="Type what you want the browser to say...">Hello! This is browser text to speech.</textarea>
+        </section>
+
+        <section class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="space-y-2 md:col-span-2">
+                <label for="voiceSelect" class="text-sm font-semibold text-cyan-300">Voice</label>
+                <select id="voiceSelect" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-slate-100"></select>
             </div>
-            <div class="bg-slate-900 p-4 rounded-xl border border-slate-700">
-                <p class="text-xs uppercase font-semibold text-cyan-400 tracking-wider mb-2">Read this aloud:</p>
-                <blockquote id="monologue" class="text-slate-200 italic font-serif text-md leading-relaxed">
-                    "Life is pain, Highness. Anyone who says differently is selling something. You keep using that word. I do not think it means what you think it means."
-                </blockquote>
-            </div>
-            
-            <div class="flex items-center gap-4">
-                <button id="recordBtn" class="flex-1 py-3 px-4 rounded-xl font-medium bg-red-600 hover:bg-red-500 active:scale-[0.98] transition cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-red-900/20">
-                    <span class="h-3 w-3 rounded-full bg-white animate-pulse"></span>
-                    <span>Record Snippet</span>
-                </button>
-                <audio id="enrollmentPlayback" controls class="hidden max-w-xs"></audio>
+
+            <div class="space-y-2">
+                <label for="rateInput" class="text-sm font-semibold text-cyan-300">Rate</label>
+                <input id="rateInput" type="range" min="0.5" max="2" value="1" step="0.1" class="w-full">
+                <p class="text-xs text-slate-400">Current: <span id="rateValue">1.0</span></p>
             </div>
         </section>
 
-        <hr class="border-slate-700/50">
-
-        <section class="space-y-3">
-            <div class="flex items-center gap-2">
-                <span class="flex h-6 w-6 items-center justify-center rounded-full bg-cyan-500 text-xs font-bold text-slate-950">2</span>
-                <h2 class="text-lg font-semibold">Generate Speech</h2>
-            </div>
-            <textarea id="targetText" placeholder="Type the text you want your cloned voice to read..." rows="4" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 placeholder-slate-500 resize-none"></textarea>
-            
-            <button id="generateBtn" disabled class="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 hover:from-cyan-400 hover:to-blue-500 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed transition shadow-lg shadow-cyan-500/10">
-                Generate Speech
-            </button>
+        <section class="space-y-2">
+            <label for="pitchInput" class="text-sm font-semibold text-cyan-300">Pitch</label>
+            <input id="pitchInput" type="range" min="0" max="2" value="1" step="0.1" class="w-full">
+            <p class="text-xs text-slate-400">Current: <span id="pitchValue">1.0</span></p>
         </section>
 
-        <section id="outputWrapper" class="hidden bg-slate-950/50 p-4 rounded-xl border border-emerald-500/20 flex flex-col items-center space-y-3 animate-fade-in">
-            <div class="flex items-center gap-2 text-emerald-400 font-medium text-sm">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
-                Speech Generated Successfully!
-            </div>
-            <audio id="ttsPlayback" controls class="w-full mt-1"></audio>
+        <section class="flex flex-col sm:flex-row gap-3">
+            <button id="speakBtn" class="flex-1 py-3 px-4 rounded-xl font-semibold bg-cyan-500 hover:bg-cyan-400 text-slate-950 transition">Speak</button>
+            <button id="stopBtn" class="flex-1 py-3 px-4 rounded-xl font-semibold bg-slate-700 hover:bg-slate-600 text-slate-100 transition">Stop</button>
         </section>
-
     </main>
 
-    <footer class="max-w-2xl mx-auto w-full text-center my-6 text-xs text-slate-500">
-        <div id="statusIndicator" class="flex items-center justify-center gap-2 text-slate-400">
-            <span class="h-2 w-2 rounded-full bg-amber-500"></span>
-            <span id="statusText">Initializing background processing thread...</span>
-        </div>
+    <footer class="max-w-2xl mx-auto w-full text-center my-6 text-xs text-slate-400">
+        Status: <span id="statusText">Ready</span>
     </footer>
 
     <script>
-        // System variables for pipeline tracking
-        let mediaRecorder;
-        let audioChunks = [];
-        let referenceAudioBlob = null;
-        let ttsWorker;
-        let isModelReady = false;
-        let isVoiceTrained = false;
+        // Step 1: Get the browser speech engine and page elements.
+        const synth = window.speechSynthesis;
+        let voices = [];
 
-        // Domain Elements Selection
-        const recordBtn = document.getElementById('recordBtn');
-        const enrollmentPlayback = document.getElementById('enrollmentPlayback');
-        const targetText = document.getElementById('targetText');
-        const generateBtn = document.getElementById('generateBtn');
-        const outputWrapper = document.getElementById('outputWrapper');
-        const ttsPlayback = document.getElementById('ttsPlayback');
+        const textInput = document.getElementById('textInput');
+        const voiceSelect = document.getElementById('voiceSelect');
+        const rateInput = document.getElementById('rateInput');
+        const pitchInput = document.getElementById('pitchInput');
+        const speakBtn = document.getElementById('speakBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const rateValue = document.getElementById('rateValue');
+        const pitchValue = document.getElementById('pitchValue');
         const statusText = document.getElementById('statusText');
-        const statusIndicator = document.getElementById('statusIndicator').firstElementChild;
-        const refTranscript = document.getElementById('monologue').innerText.trim();
 
-        const STATUS_CLASSES = {
-            ready: "h-2 w-2 rounded-full bg-emerald-500",
-            loading: "h-2 w-2 rounded-full bg-amber-500 animate-spin border-t-transparent",
-            error: "h-2 w-2 rounded-full bg-rose-500",
-        };
-
-        const RECORD_BUTTON_CLASSES = {
-            idle: "flex-1 py-3 px-4 rounded-xl font-medium bg-red-600 hover:bg-red-500 active:scale-[0.98] transition cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-red-900/20",
-            recording: "flex-1 py-3 px-4 rounded-xl font-medium bg-amber-600 hover:bg-amber-500 text-slate-950 transition flex items-center justify-center gap-2 animate-pulse",
-            recorded: "flex-1 py-3 px-4 rounded-xl font-medium bg-slate-700 hover:bg-slate-600 text-slate-200 transition flex items-center justify-center gap-2",
-        };
-
-        function setStatusClass(type) {
-            statusIndicator.className = STATUS_CLASSES[type] || STATUS_CLASSES.error;
+        // Step 2: Keep the slider labels in sync with slider values.
+        function updateSliderLabels() {
+            rateValue.textContent = Number(rateInput.value).toFixed(1);
+            pitchValue.textContent = Number(pitchInput.value).toFixed(1);
         }
 
-        function setRecordButtonState(state) {
-            if (state === 'recording') {
-                recordBtn.className = RECORD_BUTTON_CLASSES.recording;
-                recordBtn.innerHTML = '<span>Stop Recording...</span>';
-            } else if (state === 'recorded') {
-                recordBtn.className = RECORD_BUTTON_CLASSES.recorded;
-                recordBtn.innerHTML = '<span>Re-record Snippet</span>';
-            } else {
-                recordBtn.className = RECORD_BUTTON_CLASSES.idle;
-                recordBtn.innerHTML = '<span class="h-3 w-3 rounded-full bg-white animate-pulse"></span><span>Record Snippet</span>';
-            }
-        }
+        // Step 3: Load available voices into the dropdown.
+        function loadVoices() {
+            voices = synth.getVoices();
+            voiceSelect.innerHTML = '';
 
-        function updateGeneratedAudio(audioData) {
-            const blob = new Blob([audioData], { type: 'audio/wav' });
-            ttsPlayback.src = URL.createObjectURL(blob);
-            outputWrapper.classList.remove('hidden');
-        }
-
-        async function blobToMonoPcm(blob) {
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-
-            try {
-                const arrayBuffer = await blob.arrayBuffer();
-                const decoded = await audioContext.decodeAudioData(arrayBuffer);
-                const sampleRate = decoded.sampleRate;
-                const channels = decoded.numberOfChannels;
-                const frameCount = decoded.length;
-
-                const mono = new Float32Array(frameCount);
-                for (let channel = 0; channel < channels; channel++) {
-                    const channelData = decoded.getChannelData(channel);
-                    for (let i = 0; i < frameCount; i++) {
-                        mono[i] += channelData[i] / channels;
-                    }
-                }
-
-                return { pcm: mono, sampleRate };
-            } finally {
-                await audioContext.close();
-            }
-        }
-
-        function handleWorkerMessage(e) {
-            const { status, message, audioData } = e.data;
-            if (message) statusText.innerText = message;
-
-            if (status === 'ready') {
-                isModelReady = true;
-                setStatusClass('ready');
-                updateGenerationState();
-            } else if (status === 'loading' || status === 'processing' || status === 'training') {
-                setStatusClass('loading');
-                generateBtn.disabled = true;
-            } else if (status === 'trained') {
-                isVoiceTrained = true;
-                setStatusClass('ready');
-                updateGenerationState();
-            } else if (status === 'complete' && audioData) {
-                setStatusClass('ready');
-                updateGeneratedAudio(audioData);
-                updateGenerationState();
-            } else if (status === 'error') {
-                setStatusClass('error');
-                generateBtn.disabled = true;
-            }
-        }
-
-        function startWorker() {
-            ttsWorker = new Worker('./tts-worker.js', { type: 'module' });
-            ttsWorker.onmessage = handleWorkerMessage;
-            ttsWorker.postMessage({ action: 'init' });
-        }
-
-        function stopRecording() {
-            if (mediaRecorder && mediaRecorder.state === 'recording') {
-                mediaRecorder.stop();
-                return true;
-            }
-            return false;
-        }
-
-        async function startRecording() {
-            audioChunks = [];
-            isVoiceTrained = false;
-            updateGenerationState();
-
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            mediaRecorder = new MediaRecorder(stream);
-
-            mediaRecorder.ondataavailable = (e) => {
-                if (e.data.size > 0) audioChunks.push(e.data);
-            };
-
-            mediaRecorder.onstop = () => {
-                referenceAudioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                enrollmentPlayback.src = URL.createObjectURL(referenceAudioBlob);
-                enrollmentPlayback.classList.remove('hidden');
-
-                setRecordButtonState('recorded');
-                trainFromRecording();
-                stream.getTracks().forEach(track => track.stop());
-            };
-
-            mediaRecorder.start();
-            setRecordButtonState('recording');
-        }
-
-        async function handleRecordClick() {
-            if (stopRecording()) return;
-
-            try {
-                await startRecording();
-            } catch (err) {
-                alert('Microphone hardware access denied: ' + err.message);
-            }
-        }
-
-        async function trainFromRecording() {
-            if (!referenceAudioBlob || !ttsWorker) return;
-
-            const { pcm, sampleRate } = await blobToMonoPcm(referenceAudioBlob);
-            ttsWorker.postMessage({
-                action: 'train',
-                refPcmData: pcm.buffer,
-                refSampleRate: sampleRate,
-                transcript: refTranscript
-            }, [pcm.buffer]);
-        }
-
-        async function handleGenerateClick() {
-            if (!referenceAudioBlob) return;
-
-            ttsWorker.postMessage({
-                action: 'synthesize',
-                text: targetText.value.trim()
+            voices.forEach((voice, index) => {
+                const option = document.createElement('option');
+                option.value = String(index);
+                option.textContent = `${voice.name} (${voice.lang})`;
+                voiceSelect.appendChild(option);
             });
+
+            if (voices.length === 0) {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = 'No voices available yet';
+                voiceSelect.appendChild(option);
+            }
         }
 
-        // 1. Initialize Web Worker for Background Transformers.js TTS Inference
-        function initWorker() {
-            setRecordButtonState('idle');
-            startWorker();
+        // Step 4: Create an utterance and ask the browser to speak.
+        function speakText() {
+            const text = textInput.value.trim();
+
+            if (!text) {
+                statusText.textContent = 'Please type some text first.';
+                return;
+            }
+
+            // Stop any current speech before starting a new one.
+            synth.cancel();
+
+            const utterance = new SpeechSynthesisUtterance(text);
+            const selectedIndex = Number(voiceSelect.value);
+
+            if (voices[selectedIndex]) {
+                utterance.voice = voices[selectedIndex];
+            }
+
+            utterance.rate = Number(rateInput.value);
+            utterance.pitch = Number(pitchInput.value);
+
+            utterance.onstart = () => {
+                statusText.textContent = 'Speaking...';
+            };
+
+            utterance.onend = () => {
+                statusText.textContent = 'Done.';
+            };
+
+            utterance.onerror = () => {
+                statusText.textContent = 'Speech error. Try another voice.';
+            };
+
+            synth.speak(utterance);
         }
 
-        // 2. Audio Capturing Lifecycle Management (Record Pipeline)
-        recordBtn.addEventListener('click', handleRecordClick);
-
-        // 3. UI State Coordination Verification Matrix
-        function updateGenerationState() {
-            const hasVoice = referenceAudioBlob !== null;
-            const hasText = targetText.value.trim().length > 0;
-
-            generateBtn.disabled = !(hasVoice && hasText && isModelReady && isVoiceTrained);
+        // Step 5: Stop speech when the user clicks Stop.
+        function stopSpeech() {
+            synth.cancel();
+            statusText.textContent = 'Stopped.';
         }
 
-        targetText.addEventListener('input', updateGenerationState);
+        // Step 6: Hook up event listeners.
+        rateInput.addEventListener('input', updateSliderLabels);
+        pitchInput.addEventListener('input', updateSliderLabels);
+        speakBtn.addEventListener('click', speakText);
+        stopBtn.addEventListener('click', stopSpeech);
 
-        // 4. Fire Generation Processing
-        generateBtn.addEventListener('click', handleGenerateClick);
-
-        // Bootstrap Application Engine
-        window.addEventListener('DOMContentLoaded', initWorker);
+        // Step 7: Initialize page state.
+        loadVoices();
+        speechSynthesis.onvoiceschanged = loadVoices;
+        updateSliderLabels();
     </script>
 </body>
 </html>

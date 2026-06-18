@@ -3,150 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Browser Text to Speech Demo</title>
-    <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-    <script src="./vendor/tailwind-browser.js"></script>
+    <title>Text to Speech</title>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col justify-between p-6 antialiased">
-
-    <header class="max-w-2xl mx-auto w-full text-center my-8">
-        <h1 class="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">
-            Browser Text to Speech Demo
-        </h1>
-        <p class="text-slate-400 mt-2 text-sm">
-            Simple and local. Uses your browser's built-in speech engine.
-        </p>
-    </header>
-
-    <main class="max-w-2xl mx-auto w-full bg-slate-800 rounded-2xl shadow-xl border border-slate-700/50 p-6 space-y-6 my-auto">
-        <section class="space-y-2">
-            <label for="textInput" class="text-sm font-semibold text-cyan-300">Text</label>
-            <textarea id="textInput" rows="5" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500/50" placeholder="Type what you want the browser to say...">Hello! This is browser text to speech.</textarea>
-        </section>
-
-        <section class="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div class="space-y-2 md:col-span-2">
-                <label for="voiceSelect" class="text-sm font-semibold text-cyan-300">Voice</label>
-                <select id="voiceSelect" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-slate-100"></select>
-            </div>
-
-            <div class="space-y-2">
-                <label for="rateInput" class="text-sm font-semibold text-cyan-300">Rate</label>
-                <input id="rateInput" type="range" min="0.5" max="2" value="1" step="0.1" class="w-full">
-                <p class="text-xs text-slate-400">Current: <span id="rateValue">1.0</span></p>
-            </div>
-        </section>
-
-        <section class="space-y-2">
-            <label for="pitchInput" class="text-sm font-semibold text-cyan-300">Pitch</label>
-            <input id="pitchInput" type="range" min="0" max="2" value="1" step="0.1" class="w-full">
-            <p class="text-xs text-slate-400">Current: <span id="pitchValue">1.0</span></p>
-        </section>
-
-        <section class="flex flex-col sm:flex-row gap-3">
-            <button id="speakBtn" class="flex-1 py-3 px-4 rounded-xl font-semibold bg-cyan-500 hover:bg-cyan-400 text-slate-950 transition">Speak</button>
-            <button id="stopBtn" class="flex-1 py-3 px-4 rounded-xl font-semibold bg-slate-700 hover:bg-slate-600 text-slate-100 transition">Stop</button>
-        </section>
-    </main>
-
-    <footer class="max-w-2xl mx-auto w-full text-center my-6 text-xs text-slate-400">
-        Status: <span id="statusText">Ready</span>
-    </footer>
+<body>
+    <textarea id="text" rows="4">Hello! This is text to speech.</textarea>
+    <br>
+    <button id="speak">Speak</button>
 
     <script>
-        // Step 1: Get the browser speech engine and page elements.
-        const synth = window.speechSynthesis;
-        let voices = [];
+        const text = document.getElementById('text');
+        const speak = document.getElementById('speak');
 
-        const textInput = document.getElementById('textInput');
-        const voiceSelect = document.getElementById('voiceSelect');
-        const rateInput = document.getElementById('rateInput');
-        const pitchInput = document.getElementById('pitchInput');
-        const speakBtn = document.getElementById('speakBtn');
-        const stopBtn = document.getElementById('stopBtn');
-        const rateValue = document.getElementById('rateValue');
-        const pitchValue = document.getElementById('pitchValue');
-        const statusText = document.getElementById('statusText');
+        speak.addEventListener('click', () => {
+            const inputValue = text.value.trim();
 
-        // Step 2: Keep the slider labels in sync with slider values.
-        function updateSliderLabels() {
-            rateValue.textContent = Number(rateInput.value).toFixed(1);
-            pitchValue.textContent = Number(pitchInput.value).toFixed(1);
-        }
-
-        // Step 3: Load available voices into the dropdown.
-        function loadVoices() {
-            voices = synth.getVoices();
-            voiceSelect.innerHTML = '';
-
-            voices.forEach((voice, index) => {
-                const option = document.createElement('option');
-                option.value = String(index);
-                option.textContent = `${voice.name} (${voice.lang})`;
-                voiceSelect.appendChild(option);
-            });
-
-            if (voices.length === 0) {
-                const option = document.createElement('option');
-                option.value = '';
-                option.textContent = 'No voices available yet';
-                voiceSelect.appendChild(option);
-            }
-        }
-
-        // Step 4: Create an utterance and ask the browser to speak.
-        function speakText() {
-            const text = textInput.value.trim();
-
-            if (!text) {
-                statusText.textContent = 'Please type some text first.';
+            if (!inputValue) {
                 return;
             }
 
-            // Stop any current speech before starting a new one.
-            synth.cancel();
-
-            const utterance = new SpeechSynthesisUtterance(text);
-            const selectedIndex = Number(voiceSelect.value);
-
-            if (voices[selectedIndex]) {
-                utterance.voice = voices[selectedIndex];
-            }
-
-            utterance.rate = Number(rateInput.value);
-            utterance.pitch = Number(pitchInput.value);
-
-            utterance.onstart = () => {
-                statusText.textContent = 'Speaking...';
-            };
-
-            utterance.onend = () => {
-                statusText.textContent = 'Done.';
-            };
-
-            utterance.onerror = () => {
-                statusText.textContent = 'Speech error. Try another voice.';
-            };
-
-            synth.speak(utterance);
-        }
-
-        // Step 5: Stop speech when the user clicks Stop.
-        function stopSpeech() {
-            synth.cancel();
-            statusText.textContent = 'Stopped.';
-        }
-
-        // Step 6: Hook up event listeners.
-        rateInput.addEventListener('input', updateSliderLabels);
-        pitchInput.addEventListener('input', updateSliderLabels);
-        speakBtn.addEventListener('click', speakText);
-        stopBtn.addEventListener('click', stopSpeech);
-
-        // Step 7: Initialize page state.
-        loadVoices();
-        speechSynthesis.onvoiceschanged = loadVoices;
-        updateSliderLabels();
+            speechSynthesis.cancel();
+            speechSynthesis.speak(new SpeechSynthesisUtterance(inputValue));
+        });
     </script>
 </body>
 </html>
